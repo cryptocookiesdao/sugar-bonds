@@ -3,8 +3,9 @@ pragma solidity ^0.8.13;
 
 import "forge-std/Test.sol";
 import "../src/Bonds.sol";
-import "../src/mocks/Token.sol";
-import "../src/mocks/MockOracle.sol";
+import "./mocks/Token.sol";
+import "./mocks/MockOracle.sol";
+import "./mocks/MockGame.sol";
 import {WETH} from "solmate/tokens/WETH.sol";
 
 contract AlwaysFail {
@@ -23,7 +24,8 @@ contract BondsTest is Test {
         token = new Token();
         oracle = new MockOracle();
         weth = new WETH();
-        bonds = new CryptoCookiesBondsV2(address(token), address(weth), address(oracle));
+        address _game = address(new MockGame(address(token)));
+        bonds = new CryptoCookiesBondsV2(address(token), address(weth), address(oracle), _game);
     }
 
     function testCreateBondPrices() public {
@@ -34,29 +36,29 @@ contract BondsTest is Test {
         bonds.startBondSell(6, 0, 30_0000, 1_0000, 10 ether, makeAddr("strategy"), "bonos test");
         assertEq(token.balanceOf(address(bonds)), 20.2 ether);
 
-        assertEq(bonds.currentDiscount(0), 0);
         assertEq(bonds.currentDiscount(1), 0);
+        assertEq(bonds.currentDiscount(2), 0);
 
         for (uint256 _hours = 1; _hours <= 24 * 25; ++_hours) {
             vm.warp(3600 * _hours);
             uint256 expected = uint256(1_0000 * 3600 * _hours) / uint256(1 days);
-            assertApproxEqAbs(bonds.currentDiscount(0), expected, 2);
             assertApproxEqAbs(bonds.currentDiscount(1), expected, 2);
+            assertApproxEqAbs(bonds.currentDiscount(2), expected, 2);
 
             assertApproxEqAbs(
-                bonds.priceOfCookieWithDiscount(0), CKIE_PRICE * (100_0000 - expected) / 100_0000, 0.00001 ether
+                bonds.priceOfCookieWithDiscount(1), CKIE_PRICE * (100_0000 - expected) / 100_0000, 0.00001 ether
             );
             assertApproxEqAbs(
-                bonds.priceOfCookieWithDiscount(1), CKIE_PRICE * (100_0000 - expected) / 100_0000, 0.00001 ether
+                bonds.priceOfCookieWithDiscount(2), CKIE_PRICE * (100_0000 - expected) / 100_0000, 0.00001 ether
             );
         }
         skip(30 days);
 
         assertApproxEqAbs(
-            bonds.priceOfCookieWithDiscount(0), CKIE_PRICE - CKIE_PRICE * 25_0000 / 100_0000, 0.00001 ether
+            bonds.priceOfCookieWithDiscount(1), CKIE_PRICE - CKIE_PRICE * 25_0000 / 100_0000, 0.00001 ether
         );
         assertApproxEqAbs(
-            bonds.priceOfCookieWithDiscount(1), CKIE_PRICE - CKIE_PRICE * 30_0000 / 100_0000, 0.00001 ether
+            bonds.priceOfCookieWithDiscount(2), CKIE_PRICE - CKIE_PRICE * 30_0000 / 100_0000, 0.00001 ether
         );
     }
 
@@ -77,41 +79,40 @@ contract BondsTest is Test {
         vm.expectRevert(bytes("UNAUTHORIZED"));
         bonds.startBondSell(5, 0, 25_0000, 1_0000, 10 ether, makeAddr("strategy"), "bonos test");
 
-        bonds.buyBond{value: 1 ether}(0);
+        bonds.buyBond{value: 1 ether}(1);
         vm.expectRevert();
-        bonds.buyBond{value: 1 ether}(2);
+        bonds.buyBond{value: 1 ether}(3);
 
         vm.expectRevert(bytes("UNAUTHORIZED"));
-        bonds.endBondSell(0);
+        bonds.endBondSell(1);
 
         vm.stopPrank();
 
-        assertEq(bonds.activeBonds(0), 0);
-        assertEq(bonds.activeBonds(1), 1);
+        assertEq(bonds.activeBonds(0), 1);
+        assertEq(bonds.activeBonds(1), 2);
 
         vm.warp(25 days);
-        assertApproxEqAbs(bonds.currentDiscount(0), 25_0000, 2);
         assertApproxEqAbs(bonds.currentDiscount(1), 25_0000, 2);
+        assertApproxEqAbs(bonds.currentDiscount(2), 25_0000, 2);
         skip(2 days);
-        assertApproxEqAbs(bonds.currentDiscount(0), 25_0000, 2);
-        assertApproxEqAbs(bonds.currentDiscount(1), 27_0000, 2);
+        assertApproxEqAbs(bonds.currentDiscount(1), 25_0000, 2);
+        assertApproxEqAbs(bonds.currentDiscount(2), 27_0000, 2);
 
         skip(3 days);
-        assertApproxEqAbs(bonds.currentDiscount(0), 25_0000, 2);
-        assertApproxEqAbs(bonds.currentDiscount(1), 30_0000, 2);
+        assertApproxEqAbs(bonds.currentDiscount(1), 25_0000, 2);
+        assertApproxEqAbs(bonds.currentDiscount(2), 30_0000, 2);
 
         skip(3 days);
-        assertApproxEqAbs(bonds.currentDiscount(0), 25_0000, 2);
-        assertApproxEqAbs(bonds.currentDiscount(1), 30_0000, 2);
+        assertApproxEqAbs(bonds.currentDiscount(1), 25_0000, 2);
+        assertApproxEqAbs(bonds.currentDiscount(2), 30_0000, 2);
 
-        bonds.endBondSell(0);
-        assertEq(bonds.activeBonds(0), 1);
         bonds.endBondSell(1);
-
-        vm.expectRevert();
-        bonds.currentDiscount(0);
+        assertEq(bonds.activeBonds(0), 2);
+        bonds.endBondSell(2);
         vm.expectRevert();
         bonds.currentDiscount(1);
+        vm.expectRevert();
+        bonds.currentDiscount(2);
     }
 
     function testCreateEndBond(uint256 elements, uint256 seed) public {
@@ -120,7 +121,7 @@ contract BondsTest is Test {
         uint256[] memory exist = new uint256[](elements);
 
         for (uint256 i; i < elements; ++i) {
-            exist[i] = i;
+            exist[i] = i + 1;
         }
 
         for (uint256 i = 0; i < exist.length; i++) {
@@ -131,25 +132,27 @@ contract BondsTest is Test {
             exist[i] = temp;
         }
 
+        ///@dev exist is a shuffled array of [1, 2, 3, ..., elements]
+
         oracle.setPrice(1 ether);
         for (uint256 i; i < elements; ++i) {
             bonds.startBondSell(5, 0, 25_0000, 1_0000, 1 ether, makeAddr("strategy"), "bonos test");
         }
 
-        for (uint256 i; i < elements; ++i) {
-            assertEq(bonds.activeBonds(i), i);
+        for (uint256 i = 1; i <= elements; ++i) {
+            assertEq(bonds.activeBonds(i - 1), i);
             assertEq(bonds.currentDiscount(uint128(i)), 0);
             assertEq(bonds.priceOfCookieWithDiscount(uint128(i)), 1 ether);
         }
 
-        for (uint256 i; i < elements; ++i) {
+        for (uint256 i = 1; i <= elements; ++i) {
             uint256 prevLen = bonds.activeBondsLength();
-            assertEq(bonds.currentDiscount(uint128(exist[i])), 0);
-            bonds.endBondSell(uint128(exist[i]));
+            assertEq(bonds.currentDiscount(uint128(exist[i - 1])), 0);
+            bonds.endBondSell(uint128(exist[i - 1]));
             assertEq(bonds.activeBondsLength(), prevLen - 1);
 
             for (uint256 j; j < prevLen - 1; ++j) {
-                assertFalse(uint128(exist[i]) == bonds.activeBonds(j));
+                assertFalse(uint128(exist[i - 1]) == bonds.activeBonds(j));
             }
         }
     }
@@ -168,13 +171,13 @@ contract BondsTest is Test {
         assertEq(weth.balanceOf(strategyA), 0 ether);
 
         vm.startPrank(alice);
-        bonds.buyBond{value: 0.2 ether}(0);
-        bonds.buyBond{value: 0.2 ether}(0);
-        bonds.buyBond{value: 0.2 ether}(0);
-        bonds.buyBond{value: 0.2 ether}(0);
-        bonds.buyBond{value: 2 ether}(0);
+        bonds.buyBond{value: 0.2 ether}(1);
+        bonds.buyBond{value: 0.2 ether}(1);
+        bonds.buyBond{value: 0.2 ether}(1);
+        bonds.buyBond{value: 0.2 ether}(1);
+        bonds.buyBond{value: 2 ether}(1);
         vm.expectRevert();
-        bonds.buyBond{value: 2 ether}(0);
+        bonds.buyBond{value: 2 ether}(1);
 
         assertEq(alice.balance, 9 ether);
         assertEq(weth.balanceOf(strategyA), 1 ether);
@@ -186,7 +189,7 @@ contract BondsTest is Test {
             assertEq(bonds.totalToRedeem(alice), 0.2 ether * i);
         }
 
-        bonds.buyBond{value: 1 ether}(1);
+        bonds.buyBond{value: 1 ether}(2);
 
         assertEq(bonds.totalToRedeem(alice), 1 ether);
 
@@ -228,9 +231,9 @@ contract BondsTest is Test {
         skip(1 days);
 
         vm.startPrank(alice);
-        bonds.buyBond{value: 1 ether}(0); // buy price = 1 ether / 0.99 ether
         bonds.buyBond{value: 1 ether}(1); // buy price = 1 ether / 0.99 ether
-        bonds.buyBond{value: 0.5 ether}(2); // buy price = 0.5 ether / 0.95 ether
+        bonds.buyBond{value: 1 ether}(2); // buy price = 1 ether / 0.99 ether
+        bonds.buyBond{value: 0.5 ether}(3); // buy price = 0.5 ether / 0.95 ether
 
         uint256 expected = 1 ether * 1 ether / uint256(0.99 ether);
         CryptoCookiesBondsV2.Note memory n = bonds.getNote(alice, 0);
@@ -256,7 +259,7 @@ contract BondsTest is Test {
         assertEq(notes[1].paid, 0);
         assertEq(notes[2].paid, 0);
 
-        bonds.redeem(0);
+        bonds.redeem(1);
         notes = bonds.getNotes(alice);
         assertEq(notes[0].totalCookies, expected);
         assertEq(notes[0].paid, expected * 2 / 5);
