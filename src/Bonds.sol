@@ -7,10 +7,7 @@ import {SafeTransferLib} from "solmate/utils/SafeTransferLib.sol";
 import {IERC20} from "openzeppelin-contracts/token/ERC20/IERC20.sol";
 import {IOracleSimple} from "./interfaces/IOracleSimple.sol";
 
-import "forge-std/Test.sol";
-
-interface IERC20Minteable is IERC20 {
-    function mint(uint256 amount) external;
+interface IERC20Burneable is IERC20 {
     function burn(uint256 amount) external;
 }
 
@@ -22,6 +19,8 @@ interface IBondManagerStrategy {
     function run() external;
 }
 
+/// @title Sugar Bonds
+/// @notice Bonds mechanism to sell $CKIE at a fixed price for $WMATIC, and vested in vestingDays days
 contract CryptoCookiesBondsV2 is Owned(msg.sender) {
     error errWrongDiscount();
 
@@ -64,22 +63,26 @@ contract CryptoCookiesBondsV2 is Owned(msg.sender) {
     uint256 private _noteIdCounter;
 
     ///@dev CKIE
-    IERC20Minteable public immutable COOKIETOKEN;
+    IERC20Burneable public immutable COOKIETOKEN;
     ///@dev WMATIC
     address public immutable WMATIC;
     ///@dev TWAP oracle for CKIE price against WMATIC
     IOracleSimple public immutable ORACLE;
 
+    address public immutable GAME;
+
     mapping(uint128 => Bond) public bonds;
     mapping(uint128 => Note) public notes;
     mapping(address => uint128[]) public toNotes;
 
+    ///@dev list of active bonds
     uint128[] public activeBonds;
 
-    constructor(address _cookieToken, address _wmatic, address _oracleSimple) {
-        COOKIETOKEN = IERC20Minteable(_cookieToken);
+    constructor(address _cookieToken, address _wmatic, address _oracleSimple, address _game) {
+        COOKIETOKEN = IERC20Burneable(_cookieToken);
         WMATIC = _wmatic;
         ORACLE = IOracleSimple(_oracleSimple);
+        GAME = _game;
     }
 
     /// @notice Withdraw a token or ether stuck in the contract
@@ -122,11 +125,12 @@ contract CryptoCookiesBondsV2 is Owned(msg.sender) {
         }
 
         uint128 bondUid;
-        unchecked {
-            // Adds 101% from _cookiesToBond, 1% extramint go for the devs
-            COOKIETOKEN.mint((_cookiesToBond * 101) / 100);
-            bondUid = _totalBonds++;
-        }
+        // Sumo 101% del _cookiesToBond, ya que 1% es para devs
+        (bool success,) = GAME.call(abi.encodeWithSignature("sugarBondMint(uint256)", (_cookiesToBond * 101) / 100));
+        require(success, "Bond mint failed");
+
+        bondUid = ++_totalBonds;
+
         activeBonds.push(bondUid);
 
         emit BondTermsStart(
@@ -147,6 +151,9 @@ contract CryptoCookiesBondsV2 is Owned(msg.sender) {
             );
     }
 
+    /// @notice end a bond sell
+    /// @dev this function will end the bond and burn the remaining cookies
+    /// @param uid bond uid
     function endBondSell(uint128 uid) external onlyOwner {
         _endBondSell(uid);
     }
@@ -209,7 +216,7 @@ contract CryptoCookiesBondsV2 is Owned(msg.sender) {
 
         uint128 noteUid;
         unchecked {
-            noteUid = uint128(_noteIdCounter++);
+            noteUid = uint128(++_noteIdCounter);
 
             notes[noteUid] = Note({
                 uid: noteUid,
@@ -229,7 +236,7 @@ contract CryptoCookiesBondsV2 is Owned(msg.sender) {
         IWETH(WMATIC).deposit{value: value}();
         IERC20(WMATIC).transfer(_bond.bondManagerStrategy, value);
 
-        // ignore return if something goes wrong we could do it later
+        // ignore return
         _bond.bondManagerStrategy.call(abi.encodeWithSignature("run()"));
 
         emit NoteAdded(msg.sender, noteUid, value, cookiesForUser);
@@ -245,6 +252,7 @@ contract CryptoCookiesBondsV2 is Owned(msg.sender) {
         }
     }
 
+    /// @notice Redeem all bonds for msg.sender
     function redeemAll() external {
         uint128[] memory _notes = toNotes[msg.sender];
         uint256 len = _notes.length;
@@ -374,6 +382,18 @@ contract CryptoCookiesBondsV2 is Owned(msg.sender) {
         }
     }
 
+    function detailActiveBonds() external view returns (Bond[] memory ret) {
+        uint256 len = activeBonds.length;
+        ret = new Bond[](len);
+        unchecked {
+            for (uint256 i; i < len; ++i) {
+                ret[i] = bonds[activeBonds[i]];
+            }
+        }
+        return ret;
+    }
+
+    /// @dev assume that always noteUid is a note if that exist in the array userNotes
     function _deleteNote(address account, uint256 noteUid) internal {
         uint128[] storage userNotes = toNotes[account];
         uint256 len = userNotes.length;
